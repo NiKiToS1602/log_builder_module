@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Журналы контроля</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <nav class="navigation" aria-label="Разделы модуля"></nav>
+      <div class="profile">
+        <img src="/assets/profile.png" alt="" width="28" height="28">
+        <span>Администратор</span>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="action-bar" aria-label="Действия страницы"></header>
+      <main id="page" class="page" tabindex="-1"></main>
+    </div>
+  </div>
+  <dialog class="dialog" aria-labelledby="dialog-title">
+    <div class="dialog-header">
+      <h2 id="dialog-title"></h2>
+      <form method="dialog">
+        <button class="dialog-close" aria-label="Закрыть" autofocus>×</button>
+      </form>
+    </div>
+    <div class="dialog-body"></div>
+  </dialog>
+</body>
+</html>
