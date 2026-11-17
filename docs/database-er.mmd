@@ -1,0 +1,192 @@
+erDiagram
+    direction LR
+    organization {
+        bigint id PK
+        text issuer
+    }
+    directory_member {
+        bigint organization_id PK,FK
+        uuid member_uid PK
+        text full_name
+        text role
+        text status
+        bigint primary_location_id FK
+        boolean is_removed
+    }
+    directory_location {
+        bigint organization_id PK,FK
+        bigint location_id PK
+        text name
+        text status
+        boolean is_removed
+    }
+    directory_member_location {
+        bigint organization_id PK,FK
+        uuid member_uid PK,FK
+        bigint location_id PK,FK
+    }
+    directory_sync_checkpoint {
+        bigint organization_id PK,FK
+        text resource PK
+        jsonb subscription
+        text delta_cursor
+    }
+    template {
+        bigint organization_id PK,FK
+        uuid id PK
+        text name
+        text status
+        uuid created_by_uid FK
+        bigint version
+    }
+    template_field {
+        bigint organization_id PK,FK
+        uuid id PK
+        uuid template_id FK
+        integer position
+        text type
+        text name
+        boolean required
+        text fill_mode
+        numeric min_value
+        numeric max_value
+        text confirmation_rule
+        text confirmation_timing
+    }
+    template_field_approver {
+        bigint organization_id PK,FK
+        uuid field_id PK,FK
+        uuid member_uid PK,FK
+    }
+    journal {
+        bigint organization_id PK,FK
+        uuid id PK
+        uuid template_id FK
+        bigint template_version
+        bigint location_id FK
+        uuid responsible_uid FK
+        uuid created_by_uid FK
+        text name
+        text status
+        bigint next_entry_number
+        bigint version
+    }
+    journal_field {
+        bigint organization_id PK,FK
+        uuid id PK
+        uuid journal_id FK
+        uuid source_field_id
+        integer position
+        text type
+        text name
+        boolean required
+        text fill_mode
+        numeric min_value
+        numeric max_value
+        text confirmation_rule
+        text confirmation_timing
+    }
+    journal_field_approver {
+        bigint organization_id PK,FK
+        uuid field_id PK,FK
+        uuid member_uid PK,FK
+    }
+    journal_schedule {
+        bigint organization_id PK,FK
+        uuid journal_id PK,FK
+        date starts_on
+        date ends_on
+        text frequency
+        integer interval_count
+        smallint_array weekdays
+        smallint month_day
+    }
+    journal_entry {
+        bigint organization_id PK,FK
+        uuid id PK
+        uuid journal_id FK
+        bigint number
+        uuid author_uid FK
+        timestamptz created_at
+        bigint version
+    }
+    entry_cell {
+        bigint organization_id PK,FK
+        uuid journal_id PK,FK
+        uuid entry_id PK,FK
+        uuid field_id PK,FK
+        text field_type FK
+        text state
+        text text_value
+        numeric number_value
+        date date_value
+        uuid member_uid FK
+        bigint location_id FK
+        boolean boolean_value
+    }
+    cell_confirmation {
+        bigint organization_id PK,FK
+        uuid journal_id PK,FK
+        uuid entry_id PK,FK
+        uuid field_id PK,FK
+        uuid confirmer_uid FK
+        text full_name_snapshot
+        text role_snapshot
+        timestamptz confirmed_at
+    }
+    cell_attachment {
+        bigint organization_id PK,FK
+        uuid journal_id PK,FK
+        uuid entry_id PK,FK
+        uuid field_id PK,FK
+        text storage_key UK
+        text media_type
+        bigint size_bytes
+        text sha256
+    }
+    audit_event {
+        bigint organization_id PK,FK
+        uuid id PK
+        uuid journal_id FK
+        uuid template_id FK
+        uuid entry_id FK
+        uuid actor_uid FK
+        text event_type
+        timestamptz occurred_at
+        jsonb before_data
+        jsonb after_data
+    }
+
+    organization ||--o{ directory_member : содержит
+    organization ||--o{ directory_location : содержит
+    organization ||--o{ directory_sync_checkpoint : синхронизация
+    organization ||--o{ template : владеет
+    directory_member ||--o{ directory_member_location : назначен
+    directory_location ||--o{ directory_member_location : включает
+    directory_location o|--o{ directory_member : основной_филиал
+    template ||--|{ template_field : столбцы
+    template_field ||--o{ template_field_approver : разрешает
+    directory_member ||--o{ template_field_approver : выбран
+    directory_member ||--o{ template : автор
+    template ||--o{ journal : создаёт
+    directory_location ||--o{ journal : размещает
+    directory_member o|--o{ journal : ответственный
+    directory_member ||--o{ journal : автор
+    journal ||--|{ journal_field : копия_схемы
+    journal_field ||--o{ journal_field_approver : разрешает
+    directory_member ||--o{ journal_field_approver : выбран
+    journal ||--o| journal_schedule : периодичность
+    journal ||--o{ journal_entry : строки
+    directory_member ||--o{ journal_entry : автор
+    journal_entry ||--|{ entry_cell : ячейки
+    journal_field ||--o{ entry_cell : типизирует
+    directory_member o|--o{ entry_cell : значение
+    directory_location o|--o{ entry_cell : значение
+    entry_cell ||--o| cell_confirmation : подтверждение
+    entry_cell ||--o| cell_attachment : изображение
+    directory_member ||--o{ cell_confirmation : подтвердил
+    organization ||--o{ audit_event : история
+    journal o|--o{ audit_event : события
+    template o|--o{ audit_event : события
+    journal_entry o|--o{ audit_event : события
+    directory_member ||--o{ audit_event : участник
