@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { extname } from 'node:path'
 
 const port = Number(process.env.PORT ?? 5173)
-const pages = new Set(['/', '/employees', '/locations'])
+const pages = new Set(['/', '/employees', '/locations', '/journals', '/templates'])
 const contentTypes = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -20,7 +20,12 @@ createServer(async (request, response) => {
 
   const path = request.url.split('?')[0]
   const route = path.replace(/\/$/, '') || '/'
-  const file = pages.has(route) ? '/index.html' : path
+  if (route === '/builder') {
+    response.writeHead(302, { Location: '/templates', 'Cache-Control': 'no-store' }).end()
+    return
+  }
+  const isPage = pages.has(route) || /^\/journals\/[0-9a-f-]+$/.test(route)
+  const file = isPage ? '/index.html' : path
   const isAsset = /^\/assets\/[a-z-]+\.(svg|png)$/.test(file)
   const isSource = /^\/(index\.html|styles\.css|[a-z-]+\.js)$/.test(file)
 
