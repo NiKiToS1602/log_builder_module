@@ -5,12 +5,13 @@ import jakarta.persistence.LockModeType;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.stereotype.Repository;
 import ru.clearbarn.logbuilder.access.JournalAccess;
 import ru.clearbarn.logbuilder.model.journal.Journal;
 import ru.clearbarn.logbuilder.model.journal.JournalField;
-import ru.clearbarn.logbuilder.model.journal.JournalFieldApprover;
+import ru.clearbarn.logbuilder.model.shared.FieldApproverId;
 
 @Repository
 class JournalStore {
@@ -70,25 +71,28 @@ class JournalStore {
             .setParameter("journal", journal.getKey().id())
             .getResultList();
 
+        boolean hasSelectedApprovers = fields.stream()
+            .anyMatch(field -> "selected_members".equals(field.getConfirmationRule()));
+        Map<UUID, List<UUID>> approvers = hasSelectedApprovers ? approvers(journal) : Map.of();
+        return fields.stream()
+            .map(field -> JournalApi.Column.from(field, approvers.getOrDefault(field.getKey().id(), List.of())))
+            .toList();
+    }
+
+    private Map<UUID, List<UUID>> approvers(Journal journal) {
         var approvers = new HashMap<UUID, List<UUID>>();
         entities.createQuery("""
-            select a from JournalFieldApprover a
+            select a.key from JournalFieldApprover a
             where a.key.organizationId = :organization and a.key.fieldId in (
                 select f.key.id from JournalField f
                 where f.key.organizationId = :organization and f.journalId = :journal
             )
             order by a.key.memberUid
-            """, JournalFieldApprover.class)
+            """, FieldApproverId.class)
             .setParameter("organization", journal.getKey().organizationId())
             .setParameter("journal", journal.getKey().id())
             .getResultList()
-            .forEach(approver -> {
-                var key = approver.getKey();
-                approvers.computeIfAbsent(key.fieldId(), id -> new ArrayList<>()).add(key.memberUid());
-            });
-
-        return fields.stream()
-            .map(field -> JournalApi.Column.from(field, approvers.getOrDefault(field.getKey().id(), List.of())))
-            .toList();
+            .forEach(key -> approvers.computeIfAbsent(key.fieldId(), id -> new ArrayList<>()).add(key.memberUid()));
+        return approvers;
     }
 }

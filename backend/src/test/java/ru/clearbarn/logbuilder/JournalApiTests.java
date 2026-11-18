@@ -1,13 +1,21 @@
 package ru.clearbarn.logbuilder;
 
+import jakarta.persistence.EntityManagerFactory;
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+import org.hibernate.SessionFactory;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -17,6 +25,8 @@ import ru.clearbarn.logbuilder.access.JournalAccess.Role;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -36,6 +46,7 @@ class JournalApiTests {
     @Autowired JdbcTemplate sql;
     @Autowired TransactionTemplate transactions;
     @Autowired ObjectMapper json;
+    @Autowired EntityManagerFactory entityManagerFactory;
 
     @Test
     void publishesJournalOperationsInOpenApi() throws Exception {
@@ -161,6 +172,74 @@ class JournalApiTests {
         assertEquals(1, sql.queryForObject(
             "select count(*) from cell_confirmation where organization_id=? and entry_id=?",
             Integer.class, fixture.organization(), entry));
+    }
+
+    @Test
+    void archiveChecksAnEntryCommittedWhileWaitingForTheJournalLock() throws Exception {
+        var fixture = seed(109);
+        var access = fixture.access(Role.MANAGER, 1L);
+        var created = mvc.perform(post(API).requestAttr(REQUEST_ATTRIBUTE, access)
+                .contentType("application/json").content("""
+                    {"name":"Контроль","templateId":"%s","templateVersion":0,"locationId":1,
+                     "startDate":"2026-11-19","schedule":{"frequency":"daily","interval":1}}
+                    """.formatted(fixture.template())))
+            .andExpect(status().isCreated())
+            .andReturn();
+        var journal = journalId(created);
+        String url = API + "/" + journal;
+        UUID entry;
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var archive = new FutureTask<>(() ->
+                mvc.perform(delete(url).requestAttr(REQUEST_ATTRIBUTE, access).param("version", "0"))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.detail").value("Подтвердите все записи перед архивацией журнала."))
+                    .andReturn());
+            entry = transactions.execute(tx -> {
+                var pendingEntry = insertPendingEntry(fixture, journal);
+                int writerPid = sql.queryForObject("select pg_backend_pid()", Integer.class);
+                executor.execute(archive);
+                waitForArchiveLock(writerPid);
+                return pendingEntry;
+            });
+            archive.get(10, TimeUnit.SECONDS);
+        }
+        confirmEntry(fixture, entry);
+
+        mvc.perform(delete(url).requestAttr(REQUEST_ATTRIBUTE, access).param("version", "0"))
+            .andExpect(status().isNoContent());
+        mvc.perform(get(url).requestAttr(REQUEST_ATTRIBUTE, access))
+            .andExpect(jsonPath("$.journal.status").value("archived"))
+            .andExpect(jsonPath("$.schedule.frequency").value("daily"))
+            .andExpect(jsonPath("$.columns[1].approverUids[0]").value(fixture.member().toString()));
+        assertThrows(DataIntegrityViolationException.class, () -> insertPendingEntry(fixture, journal));
+        assertEquals(1, sql.queryForObject("select count(*) from journal_entry where organization_id=? and journal_id=?",
+            Integer.class, fixture.organization(), journal));
+    }
+
+    @Test
+    void readsJournalWithoutSelectedApproversInThreeStatements() throws Exception {
+        var fixture = seed(110);
+        transactions.executeWithoutResult(tx -> {
+            sql.update("delete from template_field_approver where organization_id=?", fixture.organization());
+            sql.update("""
+                update template_field set confirmation_rule='manager'
+                where organization_id=? and template_id=? and type='confirmation'
+                """, fixture.organization(), fixture.template());
+        });
+        var journal = insertJournal(fixture, 1, "00000000-0000-4000-8000-000000000010");
+        var statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        boolean enabled = statistics.isStatisticsEnabled();
+        statistics.setStatisticsEnabled(true);
+        try {
+            long before = statistics.getPrepareStatementCount();
+            mvc.perform(get(API + "/" + journal).requestAttr(REQUEST_ATTRIBUTE, fixture.access(Role.MANAGER, 1L)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.columns[1].confirmationRule").value("manager"))
+                .andExpect(jsonPath("$.columns[1].approverUids").isEmpty());
+            assertEquals(3, statistics.getPrepareStatementCount() - before);
+        } finally {
+            statistics.setStatisticsEnabled(enabled);
+        }
     }
 
     @Test
@@ -442,6 +521,21 @@ class JournalApiTests {
                 update entry_cell set state='filled' where organization_id=? and entry_id=? and field_type='confirmation'
                 """, fixture.organization(), entry);
         });
+    }
+
+    private void waitForArchiveLock(int writerPid) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(8).toNanos();
+        do {
+            if (Boolean.TRUE.equals(sql.queryForObject("""
+                select exists (
+                    select from pg_locks where not granted and ? = any(pg_blocking_pids(pid))
+                )
+                """, Boolean.class, writerPid))) {
+                return;
+            }
+            LockSupport.parkNanos(Duration.ofMillis(20).toNanos());
+        } while (System.nanoTime() < deadline);
+        fail("Archive request did not wait for the entry transaction");
     }
 
     private record Fixture(long organization, UUID member, UUID template) {
