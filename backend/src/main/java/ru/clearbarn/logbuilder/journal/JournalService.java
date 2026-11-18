@@ -137,7 +137,7 @@ class JournalService {
         return detail(journal, settings);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     void archive(JournalAccess access, UUID id, long version) {
         requireEditor(access);
         var journal = find(access, id, LockModeType.PESSIMISTIC_WRITE);
@@ -146,6 +146,9 @@ class JournalService {
             return;
         }
         checkVersion(journal, version);
+        if ("active".equals(journal.getStatus()) && store.hasUnresolvedConfirmations(journal)) {
+            throw conflict("Подтвердите все записи перед архивацией журнала.");
+        }
         String actorName = actorName(access);
         var settings = JournalScheduleSettings.from(findSchedule(journal));
         var before = auditData(journal, settings);

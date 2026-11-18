@@ -47,6 +47,19 @@ class JournalStore {
             .getSingleResultOrNull();
     }
 
+    boolean hasUnresolvedConfirmations(Journal journal) {
+        return (Boolean) entities.createNativeQuery("""
+            select exists (
+                select from entry_cell
+                where organization_id = :organization and journal_id = :journal
+                  and field_type = 'confirmation' and state not in ('filled', 'skipped')
+            )
+            """, Boolean.class)
+            .setParameter("organization", journal.getKey().organizationId())
+            .setParameter("journal", journal.getKey().id())
+            .getSingleResult();
+    }
+
     List<JournalApi.Column> columns(Journal journal) {
         var fields = entities.createQuery("""
             select f from JournalField f

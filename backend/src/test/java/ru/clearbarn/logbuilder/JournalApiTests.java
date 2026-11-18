@@ -129,6 +129,41 @@ class JournalApiTests {
     }
 
     @Test
+    void rejectsArchiveUntilDeferredConfirmationIsResolved() throws Exception {
+        var fixture = seed(108);
+        var access = fixture.access(Role.MANAGER, 1L);
+        var journal = insertJournal(fixture, 1, "00000000-0000-4000-8000-000000000008");
+        var entry = insertPendingEntry(fixture, journal);
+        String url = API + "/" + journal;
+
+        mvc.perform(delete(url).requestAttr(REQUEST_ATTRIBUTE, access).param("version", "0"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.detail").value("Подтвердите все записи перед архивацией журнала."));
+        mvc.perform(get(url).requestAttr(REQUEST_ATTRIBUTE, access))
+            .andExpect(jsonPath("$.journal.status").value("active"))
+            .andExpect(jsonPath("$.journal.version").value(0));
+        assertEquals(0, sql.queryForObject(
+            "select count(*) from audit_event where organization_id=? and journal_id=?",
+            Integer.class, fixture.organization(), journal));
+
+        confirmEntry(fixture, entry);
+        mvc.perform(delete(url).requestAttr(REQUEST_ATTRIBUTE, access).param("version", "0"))
+            .andExpect(status().isNoContent());
+        mvc.perform(delete(url).requestAttr(REQUEST_ATTRIBUTE, access).param("version", "0"))
+            .andExpect(status().isNoContent());
+        mvc.perform(get(url).requestAttr(REQUEST_ATTRIBUTE, access))
+            .andExpect(jsonPath("$.journal.status").value("archived"))
+            .andExpect(jsonPath("$.journal.version").value(1))
+            .andExpect(jsonPath("$.journal.archivedAt").isString());
+        assertEquals(1, sql.queryForObject(
+            "select count(*) from audit_event where organization_id=? and journal_id=? and event_type='journal_archived'",
+            Integer.class, fixture.organization(), journal));
+        assertEquals(1, sql.queryForObject(
+            "select count(*) from cell_confirmation where organization_id=? and entry_id=?",
+            Integer.class, fixture.organization(), entry));
+    }
+
+    @Test
     void scopesEveryOperationToVerifiedOrganizationLocationsAndRole() throws Exception {
         var fixture = seed(102);
         var other = seed(103);
@@ -378,6 +413,35 @@ class JournalApiTests {
             values (?, ?, ?, 0, 'Журнал', ?, 'active', ?, '2026-01-01T00:00:00Z')
             """, fixture.organization(), journal, fixture.template(), location, fixture.member());
         return journal;
+    }
+
+    private UUID insertPendingEntry(Fixture fixture, UUID journal) {
+        var entry = UUID.randomUUID();
+        transactions.executeWithoutResult(tx -> {
+            sql.update("insert into journal_entry (organization_id, id, journal_id, author_uid) values (?, ?, ?, ?)",
+                fixture.organization(), entry, journal, fixture.member());
+            sql.update("""
+                insert into entry_cell (organization_id, journal_id, entry_id, field_id, field_type, state)
+                select organization_id, journal_id, ?, id, type,
+                    case when type = 'confirmation' then 'pending' else 'skipped' end
+                from journal_field where organization_id=? and journal_id=?
+                """, entry, fixture.organization(), journal);
+        });
+        return entry;
+    }
+
+    private void confirmEntry(Fixture fixture, UUID entry) {
+        transactions.executeWithoutResult(tx -> {
+            sql.update("""
+                insert into cell_confirmation
+                    (organization_id, journal_id, entry_id, field_id, confirmer_uid, full_name_snapshot, role_snapshot)
+                select organization_id, journal_id, entry_id, field_id, ?, 'Тестовый сотрудник', 'manager'
+                from entry_cell where organization_id=? and entry_id=? and field_type='confirmation'
+                """, fixture.member(), fixture.organization(), entry);
+            sql.update("""
+                update entry_cell set state='filled' where organization_id=? and entry_id=? and field_type='confirmation'
+                """, fixture.organization(), entry);
+        });
     }
 
     private record Fixture(long organization, UUID member, UUID template) {
