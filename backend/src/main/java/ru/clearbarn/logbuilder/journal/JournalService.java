@@ -11,6 +11,7 @@ import java.util.Objects;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 import ru.clearbarn.logbuilder.access.JournalAccess;
@@ -20,6 +21,8 @@ import ru.clearbarn.logbuilder.model.directory.DirectoryMember;
 import ru.clearbarn.logbuilder.model.directory.LocationId;
 import ru.clearbarn.logbuilder.model.directory.MemberId;
 import ru.clearbarn.logbuilder.model.journal.Journal;
+import ru.clearbarn.logbuilder.model.journal.JournalSchedule;
+import ru.clearbarn.logbuilder.model.journal.JournalScheduleId;
 import ru.clearbarn.logbuilder.model.shared.OrganizationObjectId;
 import ru.clearbarn.logbuilder.model.template.JournalTemplate;
 
@@ -59,6 +62,7 @@ class JournalService {
         }
         validateResponsible(access, request.responsibleUid());
         String actorName = actorName(access);
+        var settings = JournalScheduleSettings.from(null).with(request.startDate(), request.schedule());
 
         var journal = new Journal();
         journal.setKey(new OrganizationObjectId(access.organizationId(), UUID.randomUUID()));
@@ -72,8 +76,9 @@ class JournalService {
 
         entities.persist(journal);
         entities.flush(); // The database copies the template fields on insert.
-        recordChange(access, actorName, journal, "journal_created", null);
-        return detail(journal);
+        saveSchedule(journal, null, settings);
+        recordChange(access, actorName, journal, "journal_created", null, settings);
+        return detail(journal, settings);
     }
 
     @Transactional(readOnly = true)
@@ -90,10 +95,11 @@ class JournalService {
         return new JournalApi.Page(items, page, size, journals.size() > size);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     JournalApi.Detail get(JournalAccess access, UUID id) {
         requireAccess(access);
-        return detail(find(access, id, LockModeType.NONE));
+        var journal = find(access, id, LockModeType.NONE);
+        return detail(journal, JournalScheduleSettings.from(findSchedule(journal)));
     }
 
     @Transactional
@@ -111,15 +117,24 @@ class JournalService {
         if (responsibleChanged) {
             validateResponsible(access, request.responsibleUid());
         }
-        if (responsibleChanged || !journal.getName().equals(name)) {
+        var stored = findSchedule(journal);
+        var previous = JournalScheduleSettings.from(stored);
+        var settings = previous.with(request.startDate(), request.schedule());
+        boolean settingsChanged = !previous.equals(settings);
+        if (responsibleChanged || !journal.getName().equals(name) || settingsChanged) {
             String actorName = actorName(access);
-            var before = auditData(journal);
+            var before = auditData(journal, previous);
             journal.setName(name);
             journal.setResponsibleUid(request.responsibleUid());
+            if (settingsChanged) {
+                saveSchedule(journal, stored, settings);
+                // Schedule-only edits also need a new journal version for optimistic concurrency.
+                journal.setUpdatedAt(Instant.now());
+            }
             entities.flush();
-            recordChange(access, actorName, journal, "journal_updated", before);
+            recordChange(access, actorName, journal, "journal_updated", before, settings);
         }
-        return detail(journal);
+        return detail(journal, settings);
     }
 
     @Transactional
@@ -132,11 +147,12 @@ class JournalService {
         }
         checkVersion(journal, version);
         String actorName = actorName(access);
-        var before = auditData(journal);
+        var settings = JournalScheduleSettings.from(findSchedule(journal));
+        var before = auditData(journal, settings);
         journal.setStatus("archived");
         journal.setArchivedAt(Instant.now());
         entities.flush();
-        recordChange(access, actorName, journal, "journal_archived", before);
+        recordChange(access, actorName, journal, "journal_archived", before, settings);
     }
 
     private Journal find(JournalAccess access, UUID id, LockModeType lock) {
@@ -149,8 +165,30 @@ class JournalService {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Журнал недоступен.");
     }
 
-    private JournalApi.Detail detail(Journal journal) {
-        return new JournalApi.Detail(JournalApi.Summary.from(journal), store.columns(journal));
+    private JournalApi.Detail detail(Journal journal, JournalScheduleSettings settings) {
+        return new JournalApi.Detail(
+            JournalApi.Summary.from(journal), store.columns(journal), settings.startDate(), settings.schedule()
+        );
+    }
+
+    private JournalSchedule findSchedule(Journal journal) {
+        var key = journal.getKey();
+        return entities.find(JournalSchedule.class, new JournalScheduleId(key.organizationId(), key.id()));
+    }
+
+    private void saveSchedule(Journal journal, JournalSchedule stored, JournalScheduleSettings settings) {
+        if (settings.startDate() == null) {
+            return;
+        }
+        if (stored != null) {
+            settings.applyTo(stored);
+            return;
+        }
+        var schedule = new JournalSchedule();
+        var key = journal.getKey();
+        schedule.setKey(new JournalScheduleId(key.organizationId(), key.id()));
+        settings.applyTo(schedule);
+        entities.persist(schedule);
     }
 
     private void validateResponsible(JournalAccess access, UUID uid) {
@@ -172,7 +210,8 @@ class JournalService {
     }
 
     private void recordChange(
-        JournalAccess access, String actorName, Journal journal, String type, Map<String, Object> before
+        JournalAccess access, String actorName, Journal journal, String type, Map<String, Object> before,
+        JournalScheduleSettings settings
     ) {
         var event = new AuditEvent();
         event.setKey(new OrganizationObjectId(access.organizationId(), UUID.randomUUID()));
@@ -183,18 +222,20 @@ class JournalService {
         event.setActorNameSnapshot(actorName);
         event.setActorRoleSnapshot(access.role().name().toLowerCase(Locale.ROOT));
         event.setBeforeData(before);
-        event.setAfterData(auditData(journal));
+        event.setAfterData(auditData(journal, settings));
         event.setRequestId(UUID.randomUUID());
         entities.persist(event);
     }
 
-    private static Map<String, Object> auditData(Journal journal) {
+    private static Map<String, Object> auditData(Journal journal, JournalScheduleSettings settings) {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("name", journal.getName());
         data.put("status", journal.getStatus());
         data.put("version", journal.getVersion());
         data.put("responsibleUid", Objects.toString(journal.getResponsibleUid(), null));
         data.put("archivedAt", Objects.toString(journal.getArchivedAt(), null));
+        data.put("startDate", Objects.toString(settings.startDate(), null));
+        data.put("schedule", settings.auditSchedule());
         return data;
     }
 

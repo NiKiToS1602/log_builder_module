@@ -26,7 +26,13 @@ public class JournalSchedule {
 
     private Short[] weekdays;
 
-    private Short monthDay;
+    private Short[] monthDays;
+
+    private boolean lastDay;
+
+    private LocalDate[] dates;
+
+    private String[] times;
 
     @Version
     private Long version;

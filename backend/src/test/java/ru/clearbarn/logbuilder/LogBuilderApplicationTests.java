@@ -68,6 +68,42 @@ class LogBuilderApplicationTests {
     }
 
     @Test
+    void preservesLegacyScheduleWhenUpgradingFromV6() {
+        var config = Flyway.configure().dataSource(database).schemas("schedule_upgrade_test");
+        config.target("6").load().migrate();
+        var member = java.util.UUID.randomUUID();
+        var template = java.util.UUID.randomUUID();
+        var journal = java.util.UUID.randomUUID();
+        transactions.executeWithoutResult(tx -> {
+            sql.execute("set local search_path to schedule_upgrade_test, public");
+            sql.update("insert into organization(id, issuer) values (42, 'test')");
+            sql.update("insert into directory_member(organization_id, member_uid) values (42, ?)", member);
+            sql.update("insert into directory_location(organization_id, location_id) values (42, 1)");
+            sql.update("""
+                insert into template(organization_id,id,name,status,created_by_uid)
+                values (42,?,'Test','active',?)
+                """, template, member);
+            sql.update("""
+                insert into template_field(organization_id,id,template_id,position,type,name,required)
+                values (42,gen_random_uuid(),?,0,'text','Comment',false)
+                """, template);
+            sql.update("""
+                insert into journal(organization_id,id,template_id,template_version,name,location_id,status,created_by_uid)
+                values (42,?,?,0,'Test',1,'active',?)
+                """, journal, template, member);
+            sql.update("""
+                insert into journal_schedule(organization_id,journal_id,starts_on,frequency,interval_count,month_day,version)
+                values (42,?,date '2026-11-19','year',2,31,3)
+                """, journal);
+        });
+        config.target("latest").load().migrate();
+        assertEquals("year:2:31:3", sql.queryForObject("""
+            select concat_ws(':', frequency, interval_count, month_days[1], version)
+            from schedule_upgrade_test.journal_schedule where journal_id=?
+            """, String.class, journal));
+    }
+
+    @Test
     void pendingConfirmationBlocksCompletionUntilSigned() {
         long tenant = 3;
         var member = java.util.UUID.randomUUID();

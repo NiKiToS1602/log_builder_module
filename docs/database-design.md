@@ -109,10 +109,10 @@ CHECK проверяет соответствие field_type и заполнен
 
 | Таблица | Поля | Ограничения |
 |---|---|---|
-| journal_schedule | organization_id, journal_id, starts_on date, ends_on date NULL, frequency text, interval_count integer, weekdays smallint[] NULL, month_day smallint NULL, version | PK (organization_id, journal_id), FK журнала. interval_count > 0, ends_on >= starts_on. |
+| journal_schedule | organization_id, journal_id, starts_on date, ends_on date NULL, frequency text, interval_count integer, weekdays smallint[] NULL, month_days smallint[] NULL, last_day boolean, dates date[] NULL, times varchar[] NULL, version | PK (organization_id, journal_id), FK журнала. interval_count > 0, ends_on >= starts_on. |
 | audit_event | organization_id, id, journal_id NULL, template_id NULL, entry_id NULL, event_type text, actor_uid UUID, actor_name_snapshot text, actor_role_snapshot text, occurred_at timestamptz, before_data jsonb NULL, after_data jsonb NULL, request_id UUID | FK организации, журнала, шаблона, сотрудника. Ссылка на строку включает journal_id. Запись добавляется в транзакции действия. |
 
-Предлагаемые frequency — day, week, month, year. Для week задаются уникальные дни 1…7, для month/year — день месяца 1…31. Для year месяц берётся из starts_on. Для отсутствующего дня месяца предлагается пропуск даты. Окончательные варианты периодичности и правило для 29–31 числа нужно согласовать с фронтендом до реализации графика.
+В БД используются значения frequency: none, once, day, week, month, year, custom. Для week задаются уникальные дни 1…7, для month — числа месяца 1…31 и/или признак последнего дня, для year — одно число месяца, а месяц берётся из starts_on. Для custom задаются конкретные даты начиная с starts_on. Контракт создания и редактирования описан в [README бэкенда](../backend/README.md).
 
 График рассчитывается на запрошенный интервал по расписанию и date_value полей next_entry_date **последней сохранённой строки** активного журнала. Последняя строка определяется максимальным number. Если в ней прочерк, предыдущая строка не используется. Совпавшие даты объединяются по (journal_id, date). Материализация всех будущих дат в БД не требуется.
 
@@ -157,6 +157,7 @@ Audit сохраняет снимки данных действия и позв�
 | V4__create_entries.sql | journal_entry, entry_cell, cell_confirmation, cell_attachment, проверки типов и отложенные проверки полноты записи. |
 | V5__create_audit.sql | audit_event, индексы истории и ограничения изменения событий для прикладной роли. |
 | V6__create_query_indexes.sql | Индексы списков, графика и фильтрации, отсутствующие после создания PK/UNIQUE/FK. |
+| V7__extend_journal_schedule.sql | Варианты расписания для API создания и редактирования журналов. Прежнее число месяца переносится в массив чисел. |
 
 Все V1–V6 создаются в задании № 24 в backend/src/main/resources/db/migration. Схема создаётся Flyway, для Hibernate задаётся ddl-auto=validate. Применённые миграции сохраняют содержимое, изменения оформляются следующей версией. Данные демонстрации отделяются от рабочих миграций.
 

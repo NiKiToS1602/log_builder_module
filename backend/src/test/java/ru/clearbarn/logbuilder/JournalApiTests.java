@@ -201,6 +201,104 @@ class JournalApiTests {
     }
 
     @Test
+    void savesScheduleWithSnapshotAndVersionsScheduleOnlyEdits() throws Exception {
+        var fixture = seed(106);
+        var access = fixture.access(Role.MANAGER, 1L);
+        var created = mvc.perform(post(API).requestAttr(REQUEST_ATTRIBUTE, access)
+                .contentType("application/json").content("""
+                    {"name":"Контроль","templateId":"%s","templateVersion":0,"locationId":1,
+                     "startDate":"2026-11-19","schedule":{"frequency":"monthly","interval":2,
+                     "monthDays":[31,1,1],"lastDay":true,"times":["15:00","08:30"]}}
+                    """.formatted(fixture.template())))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.startDate").value("2026-11-19"))
+            .andExpect(jsonPath("$.schedule.monthDays[0]").value(1))
+            .andExpect(jsonPath("$.schedule.monthDays[1]").value(31))
+            .andExpect(jsonPath("$.schedule.times[0]").value("08:30"))
+            .andExpect(jsonPath("$.columns[0].name").value("Комментарий"))
+            .andReturn();
+        var id = journalId(created);
+        String url = API + "/" + id;
+        mvc.perform(get(url).requestAttr(REQUEST_ATTRIBUTE, access))
+            .andExpect(jsonPath("$.schedule.frequency").value("monthly"))
+            .andExpect(jsonPath("$.schedule.lastDay").value(true));
+
+        String update = """
+            {"name":"Контроль","version":0,"schedule":{"frequency":"custom","dates":["2026-11-21","2026-11-20"]}}
+            """;
+        mvc.perform(put(url).requestAttr(REQUEST_ATTRIBUTE, access).contentType("application/json").content(update))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.journal.version").value(1))
+            .andExpect(jsonPath("$.startDate").value("2026-11-19"))
+            .andExpect(jsonPath("$.schedule.dates[0]").value("2026-11-20"));
+        mvc.perform(get(url).requestAttr(REQUEST_ATTRIBUTE, access))
+            .andExpect(jsonPath("$.schedule.dates[1]").value("2026-11-21"));
+        mvc.perform(put(url).requestAttr(REQUEST_ATTRIBUTE, access).contentType("application/json").content(update))
+            .andExpect(status().isConflict());
+        mvc.perform(put(url).requestAttr(REQUEST_ATTRIBUTE, access).contentType("application/json").content(
+                update.replace("\"version\":0", "\"version\":1")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.journal.version").value(1));
+        mvc.perform(put(url).requestAttr(REQUEST_ATTRIBUTE, access).contentType("application/json").content("""
+                {"name":"Попытка","version":1,"startDate":"2026-11-22"}
+                """))
+            .andExpect(status().is(422));
+        mvc.perform(get(url).requestAttr(REQUEST_ATTRIBUTE, access))
+            .andExpect(jsonPath("$.journal.name").value("Контроль"))
+            .andExpect(jsonPath("$.journal.version").value(1))
+            .andExpect(jsonPath("$.startDate").value("2026-11-19"));
+        assertEquals("custom", sql.queryForObject("""
+            select after_data->'schedule'->>'frequency' from audit_event
+            where journal_id=? and before_data->'schedule'->>'frequency'='monthly'
+            """, String.class, id));
+
+        mvc.perform(put(url).requestAttr(REQUEST_ATTRIBUTE, access).contentType("application/json").content("""
+                {"name":"Контроль","version":1,"schedule":{"frequency":"none"}}
+                """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.journal.version").value(2))
+            .andExpect(jsonPath("$.startDate").value("2026-11-19"))
+            .andExpect(jsonPath("$.schedule.frequency").value("none"));
+    }
+
+    @Test
+    void rejectsInvalidSchedulesBeforeCreatingJournal() throws Exception {
+        var fixture = seed(107);
+        var access = fixture.access(Role.MANAGER, 1L);
+        for (String schedule : List.of(
+            """
+            {"frequency":"weekly","interval":1,"weekdays":[0]}
+            """,
+            """
+            {"frequency":"monthly","interval":2,"monthDays":[]}
+            """,
+            """
+            {"frequency":"daily","interval":1,"endDate":"2026-11-18"}
+            """,
+            """
+            {"frequency":"once","times":["24:00"]}
+            """
+        )) {
+            mvc.perform(post(API).requestAttr(REQUEST_ATTRIBUTE, access)
+                    .contentType("application/json").content("""
+                        {"name":"Контроль","templateId":"%s","templateVersion":0,"locationId":1,
+                         "startDate":"2026-11-19","schedule":%s}
+                        """.formatted(fixture.template(), schedule)))
+                .andExpect(status().is(422));
+        }
+        mvc.perform(post(API).requestAttr(REQUEST_ATTRIBUTE, access)
+                .contentType("application/json").content("""
+                    {"name":"Контроль","templateId":"%s","templateVersion":0,"locationId":1,
+                     "startDate":"2026-11-19","schedule":{"frequency":"daily","interval":1.5}}
+                    """.formatted(fixture.template())))
+            .andExpect(status().isBadRequest());
+        assertEquals(0, sql.queryForObject("select count(*) from journal where organization_id=?",
+            Integer.class, fixture.organization()));
+        assertEquals(0, sql.queryForObject("select count(*) from audit_event where organization_id=?",
+            Integer.class, fixture.organization()));
+    }
+
+    @Test
     void rejectsInvalidCreateWithoutLeavingPartialState() throws Exception {
         var fixture = seed(105);
         var access = fixture.access(Role.MANAGER, 1L);

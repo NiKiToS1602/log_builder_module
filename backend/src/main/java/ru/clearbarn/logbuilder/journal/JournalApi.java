@@ -2,6 +2,7 @@ package ru.clearbarn.logbuilder.journal;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 import ru.clearbarn.logbuilder.model.journal.Journal;
@@ -11,10 +12,19 @@ public final class JournalApi {
     private JournalApi() {
     }
 
-    public record Create(String name, UUID templateId, Long templateVersion, Long locationId, UUID responsibleUid) {
+    public record Create(
+        String name, UUID templateId, Long templateVersion, Long locationId, UUID responsibleUid,
+        LocalDate startDate, Schedule schedule
+    ) {
     }
 
-    public record Update(String name, UUID responsibleUid, Long version) {
+    public record Update(String name, UUID responsibleUid, Long version, LocalDate startDate, Schedule schedule) {
+    }
+
+    public record Schedule(
+        String frequency, Integer interval, LocalDate endDate, List<Short> weekdays, List<Short> monthDays,
+        Boolean lastDay, List<LocalDate> dates, List<String> times
+    ) {
     }
 
     public record Summary(
@@ -30,7 +40,7 @@ public final class JournalApi {
         }
     }
 
-    public record Detail(Summary journal, List<Column> columns) {
+    public record Detail(Summary journal, List<Column> columns, LocalDate startDate, Schedule schedule) {
     }
 
     public record Column(
