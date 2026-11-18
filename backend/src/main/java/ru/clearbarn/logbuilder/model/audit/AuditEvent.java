@@ -9,6 +9,7 @@ import java.util.UUID;
 import lombok.Getter;
 import lombok.Setter;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.Immutable;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -16,6 +17,7 @@ import ru.clearbarn.logbuilder.model.shared.OrganizationObjectId;
 
 @Entity
 @Table(name = "audit_event")
+@Immutable
 @Getter
 @Setter
 public class AuditEvent {
